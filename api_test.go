@@ -81,14 +81,14 @@ func TestServerREST(t *testing.T) {
 			name:   "Create book unauthenticated",
 			method: http.MethodPost,
 			path:   "/api/books/",
-			body:   Resource{"title": "New Book"},
+			body:   Resource{"title": textValue("New Book")},
 			status: http.StatusUnauthorized,
 		},
 		{
 			name:   "Create book invalid credentials",
 			method: http.MethodPost,
 			path:   "/api/books/",
-			body:   Resource{"title": "New Book"},
+			body:   Resource{"title": textValue("New Book")},
 			auth:   [2]string{"user1", "wrongpass"},
 			status: http.StatusUnauthorized,
 		},
@@ -98,7 +98,7 @@ func TestServerREST(t *testing.T) {
 			name:   "Create book valid user",
 			method: http.MethodPost,
 			path:   "/api/books/",
-			body:   Resource{"title": "Valid Book", "author": "Unknown Author", "year": 2023},
+			body:   Resource{"title": textValue("Valid Book"), "author": textValue("Unknown Author"), "year": numberValue(2023)},
 			auth:   [2]string{"user1", "user1pass"},
 			status: http.StatusCreated,
 			validate: func(t *testing.T, resp *http.Response) {
@@ -112,7 +112,7 @@ func TestServerREST(t *testing.T) {
 			name:   "Update book unauthorized",
 			method: http.MethodPut,
 			path:   "/api/books/book1",
-			body:   Resource{"title": "Updated Title"},
+			body:   Resource{"title": textValue("Updated Title")},
 			auth:   [2]string{"user1", "user1pass"},
 			status: http.StatusUnauthorized,
 		},
@@ -131,7 +131,7 @@ func TestServerREST(t *testing.T) {
 			name:   "Create invalid book",
 			method: http.MethodPost,
 			path:   "/api/books/",
-			body:   Resource{"title": "Book 123", "year": 3000},
+			body:   Resource{"title": textValue("Book 123"), "year": numberValue(3000)},
 			auth:   [2]string{"user1", "user1pass"},
 			status: http.StatusInternalServerError,
 		},
@@ -170,7 +170,7 @@ func TestServerTemplate(t *testing.T) {
 	s := must(NewServer(dir, filepath.Join(dir, "templates"), "" /*staticDir*/)).T(t)
 	req := httptest.NewRequest(http.MethodGet, "/books.html", nil)
 	w := httptest.NewRecorder()
-	s.Mux.ServeHTTP(w, req)
+	s.ServeMux.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status 200 OK, got %d", w.Code)
 	}
@@ -188,7 +188,7 @@ func TestServerStaticFiles(t *testing.T) {
 	s := must(NewServer(dir, "" /*tmplDir*/, filepath.Join(dir, "static"))).T(t)
 	req := httptest.NewRequest(http.MethodGet, "/static/test.txt", nil)
 	w := httptest.NewRecorder()
-	s.Mux.ServeHTTP(w, req)
+	s.ServeMux.ServeHTTP(w, req)
 	if gotBody := w.Body.String(); gotBody != "Static text file\n" {
 		t.Errorf("Static file serving failed: %v", gotBody)
 	}

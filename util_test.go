@@ -31,3 +31,7 @@ func testData(t *testing.T, src string) string {
 	must0(t, os.CopyFS(dst, os.DirFS(src)))
 	return dst
 }
+
+func textValue(s string) Value        { return Value{Type: Text, Text: s} }
+func numberValue(n float64) Value     { return Value{Type: Number, Number: n} }
+func listValue(items ...string) Value { return Value{Type: List, List: items} }

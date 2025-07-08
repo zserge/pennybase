@@ -11,9 +11,12 @@ import (
 	"fmt"
 	"html/template"
 	"io"
+	"iter"
 	"log"
+	"math"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,15 +27,42 @@ import (
 	"time"
 )
 
-type Record []string
-type Resource map[string]any
-type FieldType string
+type (
+	Record []string
+	Value  struct {
+		Type   FieldType
+		Number float64
+		Text   string
+		List   []string
+	}
+	Resource map[string]Value
+)
+
+type FieldType byte
 
 const (
-	Number FieldType = "number"
-	Text   FieldType = "text"
-	List   FieldType = "list"
+	Unknown FieldType = iota
+	Number
+	Text
+	List
 )
+
+const namesFieldType = "UnknownNumberTextList"
+
+var indicesFieldType = [...]int{0, 7, 13, 17, 21}
+
+func (ft FieldType) String() string {
+	if ft < Unknown || ft > List {
+		return "Unknown"
+	}
+	return namesFieldType[indicesFieldType[ft]:indicesFieldType[ft+1]]
+}
+
+var FieldTypes = map[string]FieldType{
+	"number": Number,
+	"text":   Text,
+	"list":   List,
+}
 
 type FieldSchema struct {
 	Resource string
@@ -50,82 +80,83 @@ type DB interface {
 	Update(r Record) error
 	Get(id string) (Record, error)
 	Delete(id string) error
-	Iter() func(yield func(Record, error) bool)
+	Iter() iter.Seq2[Record, error]
 	Close() error
 }
 
-var ID = func() string { return rand.Text() }
+var (
+	ID         = func() string { return rand.Text() }
+	Salt       = func() string { return rand.Text() }
+	HashPasswd = func(passwd, salt string) string {
+		sum := sha256.Sum256([]byte(salt + passwd))
+		return base32.StdEncoding.EncodeToString(sum[:])
+	}
+	SessionKey = Salt()
+)
 
-var Salt = func() string { return rand.Text() }
-var HashPasswd = func(passwd, salt string) string {
-	sum := sha256.Sum256([]byte(salt + passwd))
-	return base32.StdEncoding.EncodeToString(sum[:])
-}
-var SessionKey = Salt()
-
-func (field FieldSchema) Validate(v any) bool {
-	if v == nil {
+func (field FieldSchema) Validate(v Value) bool {
+	if field.Type != v.Type {
 		return false
 	}
 	switch field.Type {
 	case Number:
-		n, ok := v.(float64)
-		return ok && ((field.Min == 0 && field.Max == 0) || (n >= field.Min && (field.Max < field.Min || n <= field.Max)))
+		mn, mx := field.Min, field.Max
+		if mn > mx {
+			mx = math.MaxFloat64
+		}
+		return (mn == 0 && mx == 0) || (mn <= v.Number && v.Number <= mx)
 	case Text:
-		s, ok := v.(string)
-		return ok && (field.Regex == "" || regexp.MustCompile(field.Regex).MatchString(s))
+		return field.Regex == "" || regexp.MustCompile(field.Regex).MatchString(v.Text)
 	case List:
-		_, ok := v.([]string)
-		return ok
+		return true
 	}
 	return false
 }
 
-func (s Schema) Record(res Resource) (Record, error) {
-	rec := Record{}
-	for _, field := range s {
-		v := res[field.Field]
-		if v == nil {
-			v = map[FieldType]any{Number: 0.0, Text: "", List: []string{}}[field.Type]
+func (s Schema) Record(res Resource) (rec Record, err error) {
+	for i := range s {
+		v := res[s[i].Field]
+		if v.Type == Unknown {
+			v = Value{Type: s[i].Type}
 		}
-		if !field.Validate(v) {
-			return nil, fmt.Errorf("invalid field \"%s\"", field.Field)
+		if !s[i].Validate(v) {
+			return nil, fmt.Errorf("invalid field %q", s[i].Field)
 		}
-		switch field.Type {
+		switch s[i].Type {
 		case Number:
-			rec = append(rec, fmt.Sprintf("%g", v))
+			rec = append(rec, strconv.FormatFloat(v.Number, 'g', -1, 64))
 		case Text:
-			rec = append(rec, v.(string))
+			rec = append(rec, v.Text)
 		case List:
-			rec = append(rec, strings.Join(v.([]string), ","))
+			rec = append(rec, strings.Join(v.List, ","))
 		}
 	}
 	return rec, nil
 }
 
 func (s Schema) Resource(rec Record) (Resource, error) {
-	res := Resource{}
-	for i, field := range s {
-		if i >= len(rec) {
-			return nil, fmt.Errorf("record length %d is less than schema length %d", len(rec), len(s))
-		}
-		switch field.Type {
+	if len(rec) < len(s) {
+		return nil, fmt.Errorf("record length %d is less than schema length %d", len(rec), len(s))
+	}
+	res := make(Resource, len(s))
+	for i := range s {
+		switch s[i].Type {
 		case Number:
 			n, err := strconv.ParseFloat(rec[i], 64)
 			if err != nil {
 				return nil, err
 			}
-			res[field.Field] = n
+			res[s[i].Field] = Value{Type: Number, Number: n}
 		case Text:
-			res[field.Field] = rec[i]
+			res[s[i].Field] = Value{Type: Text, Text: rec[i]}
 		case List:
+			v := Value{Type: List}
 			if rec[i] != "" {
-				res[field.Field] = strings.Split(rec[i], ",")
-			} else {
-				res[field.Field] = []string{}
+				v.List = strings.Split(rec[i], ",")
 			}
+			res[s[i].Field] = v
 		default:
-			return nil, fmt.Errorf("unknown field type %s", field.Type)
+			return nil, fmt.Errorf("unknown field type %s", s[i].Type)
 		}
 	}
 	return res, nil
@@ -150,10 +181,10 @@ func NewCSVDB(path string) (*csvDB, error) {
 	for {
 		pos := r.InputOffset()
 		rec, err := r.Read()
-		if errors.Is(err, io.EOF) {
-			break
-		}
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				break
+			}
 			return nil, err
 		}
 		if len(rec) > 0 {
@@ -172,15 +203,21 @@ func (db *csvDB) Close() error {
 }
 
 func (db *csvDB) append(r Record) error {
-	pos, _ := db.f.Seek(0, io.SeekEnd)
-	err := db.w.Write(r)
+	version, err := strconv.ParseInt(r[1], 10, 64)
+	if err != nil {
+		return err
+	}
+	pos, err := db.f.Seek(0, io.SeekEnd)
+	if err == nil {
+		err = db.w.Write(r)
+	}
 	if err != nil {
 		return err
 	}
 	db.w.Flush()
 	db.index[r[0]] = pos
-	db.version[r[0]], err = strconv.ParseInt(r[1], 10, 64)
-	return err
+	db.version[r[0]] = version
+	return nil
 }
 
 func (db *csvDB) Create(r Record) error {
@@ -235,7 +272,7 @@ func (db *csvDB) Get(id string) (Record, error) {
 	return rec, nil
 }
 
-func (db *csvDB) Iter() func(yield func(Record, error) bool) {
+func (db *csvDB) Iter() iter.Seq2[Record, error] {
 	return func(yield func(Record, error) bool) {
 		db.mu.Lock()
 		defer db.mu.Unlock()
@@ -247,14 +284,13 @@ func (db *csvDB) Iter() func(yield func(Record, error) bool) {
 		r.FieldsPerRecord = -1
 		for {
 			rec, err := r.Read()
-			if errors.Is(err, io.EOF) {
-				break
-			}
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					break
+				}
 				yield(nil, err)
 				return
-			}
-			if len(rec) < 2 {
+			} else if len(rec) < 2 {
 				continue
 			}
 			id, version := rec[0], rec[1]
@@ -269,28 +305,39 @@ func (db *csvDB) Iter() func(yield func(Record, error) bool) {
 }
 
 func SignSession(username string) string {
-	data := fmt.Sprintf("%s:%d", username, time.Now().Unix())
-	sum := sha256.Sum256([]byte(SessionKey + data))
+	data := username + ":" + strconv.FormatInt(time.Now().Unix(), 10)
+	h := sha256.New()
+	h.Write([]byte(SessionKey))
+	h.Write([]byte(data))
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
 	sig := base32.StdEncoding.EncodeToString(sum[:])[:16]
-	return fmt.Sprintf("%s.%s", data, sig)
+	return data + "." + sig
 }
 
 func VerifySession(session string) (string, bool) {
-	parts := strings.Split(session, ".")
-	if len(parts) != 2 {
+	i := strings.IndexByte(session, '.')
+	if i < 0 {
 		return "", false
 	}
-	data, sig := parts[0], parts[1]
-	sum := sha256.Sum256([]byte(SessionKey + data))
+	data, sig := session[:i], session[i+1:]
+	h := sha256.New()
+	h.Write([]byte(SessionKey))
+	h.Write([]byte(data))
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
 	expectedSig := base32.StdEncoding.EncodeToString(sum[:])[:16]
 	if sig != expectedSig {
 		return "", false
 	}
-	if parts = strings.Split(data, ":"); len(parts) == 2 {
-		if ts, err := strconv.ParseInt(parts[1], 10, 64); err == nil {
-			if time.Now().Unix()-ts < 86400 { // 24 hours
-				return parts[0], true
-			}
+	j := strings.IndexByte(data, ':')
+	if j < 0 {
+		return "", false
+	}
+	if ts, err := strconv.ParseInt(data[j+1:], 10, 64); err == nil {
+		const secondsInDay = 24 * 60 * 60
+		if time.Now().Unix()-ts < secondsInDay {
+			return data[:j], true
 		}
 	}
 	return "", false
@@ -303,29 +350,28 @@ type Store struct {
 }
 
 func NewStore(dir string) (*Store, error) {
-	s := &Store{Dir: dir, Schemas: map[string]Schema{}, Resources: map[string]DB{}}
-	schemaDB, err := NewCSVDB(s.Dir + "/_schemas.csv")
+	s := &Store{Dir: dir, Schemas: make(map[string]Schema), Resources: make(map[string]DB)}
+	schemaDB, err := NewCSVDB(filepath.Join(s.Dir, "_schemas.csv"))
 	if err != nil {
 		return nil, err
 	}
 	for rec, err := range schemaDB.Iter() {
 		if err != nil {
 			return nil, err
-		}
-		if len(rec) != 8 {
+		} else if len(rec) != 8 {
 			return nil, fmt.Errorf("invalid schema record: %v", rec)
 		}
 		schema := FieldSchema{
 			Resource: rec[2],
 			Field:    rec[3],
-			Type:     FieldType(rec[4]),
+			Type:     FieldTypes[rec[4]],
 			Regex:    rec[7],
 		}
 		schema.Min, _ = strconv.ParseFloat(rec[5], 64)
 		schema.Max, _ = strconv.ParseFloat(rec[6], 64)
 		s.Schemas[schema.Resource] = append(s.Schemas[schema.Resource], schema)
 		if _, ok := s.Resources[schema.Resource]; !ok {
-			db, err := NewCSVDB(s.Dir + "/" + schema.Resource + ".csv")
+			db, err := NewCSVDB(filepath.Join(s.Dir, schema.Resource+".csv"))
 			if err != nil {
 				return nil, err
 			}
@@ -341,8 +387,8 @@ func (s *Store) Create(resource string, r Resource) (string, error) {
 		return "", fmt.Errorf("resource %s not found", resource)
 	}
 	newID := ID()
-	r["_id"] = newID
-	r["_v"] = 1.0
+	r["_id"] = Value{Type: Text, Text: newID}
+	r["_v"] = Value{Type: Number, Number: 1}
 	rec, err := s.Schemas[resource].Record(r)
 	if err != nil {
 		return "", err
@@ -358,7 +404,7 @@ func (s *Store) Update(resource string, r Resource) error {
 	if !ok {
 		return fmt.Errorf("resource %s not found", resource)
 	}
-	orig, err := s.Get(resource, r["_id"].(string))
+	orig, err := s.Get(resource, r["_id"].Text)
 	if err != nil {
 		return fmt.Errorf("record not found: %w", err)
 	}
@@ -367,7 +413,7 @@ func (s *Store) Update(resource string, r Resource) error {
 			r[field.Field] = orig[field.Field]
 		}
 	}
-	r["_v"] = orig["_v"].(float64) + 1
+	r["_v"] = Value{Type: Number, Number: orig["_v"].Number + 1}
 	rec, err := s.Schemas[resource].Record(r)
 	if err != nil {
 		return err
@@ -419,20 +465,9 @@ func (s *Store) List(resource, sortBy string) ([]Resource, error) {
 	}
 	if sortBy != "" {
 		sort.Slice(res, func(i, j int) bool {
-			if res[i][sortBy] == nil {
-				return false
-			}
-			if res[j][sortBy] == nil {
-				return true
-			}
-			switch res[i][sortBy].(type) {
-			case string:
-				return res[i][sortBy].(string) < res[j][sortBy].(string)
-			case float64:
-				return res[i][sortBy].(float64) < res[j][sortBy].(float64)
-			default:
-				return false
-			}
+			return res[j][sortBy].Type == Unknown ||
+				res[i][sortBy].Text < res[j][sortBy].Text ||
+				res[i][sortBy].Number < res[j][sortBy].Number
 		})
 	}
 	return res, nil
@@ -468,7 +503,7 @@ func (s *Store) AuthenticateBasic(username, password string) (Resource, error) {
 	if err != nil {
 		return nil, fmt.Errorf("users error: %w", err)
 	}
-	if u["password"] != HashPasswd(password, u["salt"].(string)) {
+	if u["password"].Text != HashPasswd(password, u["salt"].Text) {
 		return nil, errors.New("unauthenticated")
 	}
 	return u, nil
@@ -480,17 +515,17 @@ func (s *Store) Authorize(resource, id, action string, user Resource) error {
 		return fmt.Errorf("permissions error: %w", err)
 	}
 	for _, p := range permissions {
-		if p["resource"] != resource || (p["action"] != "*" && p["action"] != action) {
+		if p["resource"].Text != resource || (p["action"].Text != "*" && p["action"].Text != action) {
 			continue
 		}
-		if p["field"] == "" && p["role"] == "" { // public
+		if public := p["field"].Text == "" && p["role"].Text == ""; public {
 			return nil
 		}
 		if user == nil {
 			return errors.New("unauthenticated")
 		}
-		// Any role? Or user has the role?
-		if p["role"] == "*" || slices.Contains(user["roles"].([]string), p["role"].(string)) {
+		roles, userRole := user["roles"].List, p["role"].Text
+		if userRole == "*" || slices.Contains(roles, userRole) {
 			return nil
 		}
 		if id != "" {
@@ -498,11 +533,10 @@ func (s *Store) Authorize(resource, id, action string, user Resource) error {
 			if err != nil {
 				return err
 			}
-			username := user["_id"].(string)
-			if user, ok := res[p["field"].(string)]; ok && user == username {
-				return nil // user name matches requested resource field (string)
-			} else if users, ok := res[p["field"].(string)].([]string); ok && slices.Contains(users, username) {
-				return nil // user name is in the requested resource field (list)
+			user := user["_id"].Text
+			userOrUsers := res[p["field"].Text]
+			if userOrUsers.Text == user || slices.Contains(userOrUsers.List, user) {
+				return nil
 			}
 		}
 	}
@@ -516,36 +550,36 @@ type Event struct {
 }
 
 type Broker struct {
-	channels map[string]map[chan Event]bool // resource -> channels
-	mu       sync.RWMutex
+	// resource -> channels
+	// map[string]map[chan Event]bool
+	channels sync.Map
 }
 
 func (b *Broker) Subscribe(resource string, ch chan Event) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.channels[resource] == nil {
-		b.channels[resource] = make(map[chan Event]bool)
+	chanMap, ok := b.channels.Load(resource) // map[chan Event]bool
+	if !ok {
+		chanMap, _ = b.channels.LoadOrStore(resource, new(sync.Map))
 	}
-	b.channels[resource][ch] = true
+	chanMap.(*sync.Map).Store(ch, true)
 }
 
 func (b *Broker) Unsubscribe(resource string, ch chan Event) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if subs := b.channels[resource]; subs != nil {
-		delete(subs, ch)
+	chanMap, ok := b.channels.Load(resource)
+	if !ok {
+		return
 	}
+	chanMap.(*sync.Map).Delete(ch)
 }
 
 func (b *Broker) Publish(resource string, evt Event) {
-	b.mu.RLock()
-	defer b.mu.RUnlock()
-	if subs := b.channels[resource]; subs != nil {
-		for ch := range subs {
-			select {
-			case ch <- evt:
-			default:
-			}
+	chanMap, ok := b.channels.Load(resource)
+	if !ok {
+		return
+	}
+	for ch := range chanMap.(*sync.Map).Range {
+		select {
+		case ch.(chan Event) <- evt:
+		default:
 		}
 	}
 }
@@ -555,10 +589,25 @@ type Hook func(trigger, resource string, user, r Resource) error
 func nopHook(trigger, resource string, user, r Resource) error { return nil }
 
 type Server struct {
+	*http.ServeMux
 	Store  *Store
 	Broker *Broker
-	Mux    *http.ServeMux
 	Hook   Hook
+}
+
+var actions = map[string]string{"GET": "read", "POST": "create", "PUT": "update", "DELETE": "delete"}
+
+type userResourceKey struct{}
+
+var userResource userResourceKey
+
+func ContextWithUser(ctx context.Context, user Resource) context.Context {
+	return context.WithValue(ctx, userResource, user)
+}
+
+func UserFromContext(ctx context.Context) Resource {
+	user, _ := ctx.Value(userResource).(Resource)
+	return user
 }
 
 func NewServer(dataDir, tmplDir, staticDir string) (*Server, error) {
@@ -566,11 +615,11 @@ func NewServer(dataDir, tmplDir, staticDir string) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &Server{Store: store, Broker: &Broker{channels: map[string]map[chan Event]bool{}}, Mux: http.NewServeMux(), Hook: nopHook}
-	auth := func(next http.HandlerFunc) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	s := &Server{Store: store, Broker: new(Broker), ServeMux: http.NewServeMux(), Hook: nopHook}
+	auth := func(next http.HandlerFunc) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
 			resource := r.PathValue("resource")
-			action := map[string]string{"GET": "read", "POST": "create", "PUT": "update", "DELETE": "delete"}[r.Method]
+			action := actions[r.Method]
 			user, _ := s.Store.Authenticate(r)
 			if resource != "" && action != "" {
 				if err := s.Store.Authorize(resource, r.PathValue("id"), action, user); err != nil {
@@ -578,45 +627,44 @@ func NewServer(dataDir, tmplDir, staticDir string) (*Server, error) {
 					return
 				}
 			}
-			next(w, r.WithContext(context.WithValue(r.Context(), "user", user)))
-		})
+			next(w, r.WithContext(ContextWithUser(r.Context(), user)))
+		}
 	}
-	s.Mux.Handle("GET /api/{resource}/", auth(s.handleList))
-	s.Mux.Handle("POST /api/{resource}/", auth(s.handleCreate))
-	s.Mux.Handle("GET /api/{resource}/{id}", auth(s.handleGet))
-	s.Mux.Handle("PUT /api/{resource}/{id}", auth(s.handleUpdate))
-	s.Mux.Handle("DELETE /api/{resource}/{id}", auth(s.handleDelete))
-	s.Mux.HandleFunc("GET /api/events/{resource}", s.handleEvents)
-	s.Mux.HandleFunc("POST /api/login", s.handleLogin)
-	s.Mux.HandleFunc("POST /api/logout", s.handleLogout)
+	s.HandleFunc("GET /api/{resource}/", auth(s.handleList))
+	s.HandleFunc("POST /api/{resource}/", auth(s.handleCreate))
+	s.HandleFunc("GET /api/{resource}/{id}", auth(s.handleGet))
+	s.HandleFunc("PUT /api/{resource}/{id}", auth(s.handleUpdate))
+	s.HandleFunc("DELETE /api/{resource}/{id}", auth(s.handleDelete))
+	s.HandleFunc("GET /api/events/{resource}", s.handleEvents)
+	s.HandleFunc("POST /api/login", s.handleLogin)
+	s.HandleFunc("POST /api/logout", s.handleLogout)
 	if tmplDir != "" {
-		if tmpl, err := template.ParseGlob(filepath.Join(tmplDir, "*")); err == nil {
-			for _, t := range tmpl.Templates() {
-				if t.Name() == "index.html" {
-					s.Mux.Handle("GET /", s.handleTemplate(t, "index.html"))
-				}
-				s.Mux.Handle(fmt.Sprintf("GET /%s", t.Name()), s.handleTemplate(tmpl, t.Name()))
-			}
-		} else {
+		tmpl, err := template.ParseGlob(filepath.Join(tmplDir, "*"))
+		if err != nil {
 			log.Fatal("Error parsing templates:", err)
+		}
+		for _, t := range tmpl.Templates() {
+			if t.Name() == "index.html" {
+				s.Handle("GET /", s.handleTemplate(t, "index.html"))
+			}
+			s.Handle("GET /"+t.Name(), s.handleTemplate(tmpl, t.Name()))
 		}
 	}
 	if staticDir != "" {
-		s.Mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
+		s.Handle("GET /static/", http.StripPrefix("/static/", http.FileServer(http.Dir(staticDir))))
 	}
 
 	return s, nil
 }
 
-func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) { s.Mux.ServeHTTP(w, r) }
-
 func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	res, err := s.Store.List(r.PathValue("resource"), r.FormValue("sort_by"))
+	if err == nil {
+		err = json.NewEncoder(w).Encode(res)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
-	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -626,7 +674,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resource := r.PathValue("resource")
-	if err := s.Hook("create", resource, r.Context().Value("user").(Resource), res); err != nil {
+	if err := s.Hook("create", resource, UserFromContext(r.Context()), res); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -635,34 +683,35 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Broker.Publish(resource, Event{Action: "created", ID: res["_id"].(string), Data: res})
-	w.Header().Set("Location", fmt.Sprintf("/api/%s/%s", resource, id))
-	w.Header().Set("HX-Trigger", fmt.Sprintf("%s-changed", resource))
+	s.Broker.Publish(resource, Event{Action: "created", ID: res["_id"].Text, Data: res})
+	w.Header().Set("Location", path.Join("/api", resource, id))
+	w.Header().Set("HX-Trigger", resource+"-changed")
 	w.WriteHeader(http.StatusCreated)
 }
 
 func (s *Server) handleGet(w http.ResponseWriter, r *http.Request) {
 	res, err := s.Store.Get(r.PathValue("resource"), r.PathValue("id"))
+	if err == nil {
+		if res == nil {
+			http.NotFound(w, r)
+			return
+		}
+		err = json.NewEncoder(w).Encode(res)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
 	}
-	if res == nil {
-		http.NotFound(w, r)
-		return
-	}
-	_ = json.NewEncoder(w).Encode(res)
 }
 
 func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
-	res := Resource{}
+	var res Resource
 	if err := json.NewDecoder(r.Body).Decode(&res); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	resource := r.PathValue("resource")
-	res["_id"] = r.PathValue("id")
-	if err := s.Hook("update", resource, r.Context().Value("user").(Resource), res); err != nil {
+	res["_id"] = Value{Type: Text, Text: r.PathValue("id")}
+	if err := s.Hook("update", resource, UserFromContext(r.Context()), res); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -670,14 +719,14 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	s.Broker.Publish(resource, Event{Action: "updated", ID: res["_id"].(string), Data: res})
+	s.Broker.Publish(resource, Event{Action: "updated", ID: res["_id"].Text, Data: res})
 	w.Header().Set("HX-Trigger", fmt.Sprintf("%s-changed", resource))
 	w.WriteHeader(http.StatusOK)
 }
 
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	res, _ := s.Store.Get(r.PathValue("resource"), r.PathValue("id"))
-	if err := s.Hook("delete", r.PathValue("resource"), r.Context().Value("user").(Resource), res); err != nil {
+	if err := s.Hook("delete", r.PathValue("resource"), UserFromContext(r.Context()), res); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
