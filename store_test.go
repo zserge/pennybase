@@ -20,11 +20,11 @@ func TestStoreCRUD(t *testing.T) {
 			operation: func(s *Store) error {
 				ID = func() string { return "test-id-1" }
 				_, err := s.Create("books", Resource{
-					"title":            "The Go Programming Language",
-					"author":           "Alan Donovan",
-					"publication_year": 2015.0,
-					"genres":           []string{"Programming"},
-					"isbn":             "123-0123456789",
+					"title":            textValue("The Go Programming Language"),
+					"author":           textValue("Alan Donovan"),
+					"publication_year": numberValue(2015),
+					"genres":           listValue("Programming"),
+					"isbn":             textValue("123-0123456789"),
 				})
 				return err
 			},
@@ -34,7 +34,7 @@ func TestStoreCRUD(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if res["title"] != "The Go Programming Language" || res["_v"].(float64) != 1.0 {
+				if res["title"].Text != "The Go Programming Language" || res["_v"].Number != 1 {
 					return errors.New("created book mismatch")
 				}
 				return nil
@@ -44,10 +44,10 @@ func TestStoreCRUD(t *testing.T) {
 			name: "Create invalid book (missing title)",
 			operation: func(s *Store) error {
 				_, err := s.Create("books", Resource{
-					"author":           "Anonymous",
-					"publication_year": 2023.0,
-					"genres":           []string{"Mystery"},
-					"isbn":             "999-9999999999",
+					"author":           textValue("Anonymous"),
+					"publication_year": numberValue(2023),
+					"genres":           listValue("Mystery"),
+					"isbn":             textValue("999-9999999999"),
 				})
 				return err
 			},
@@ -58,22 +58,22 @@ func TestStoreCRUD(t *testing.T) {
 			operation: func(s *Store) error {
 				ID = func() string { return "test-id-2" }
 				_, err := s.Create("books", Resource{
-					"title":            "Original Title",
-					"author":           "Author",
-					"publication_year": 2020.0,
-					"genres":           []string{"Old"},
-					"isbn":             "111-1111111111",
+					"title":            textValue("Original Title"),
+					"author":           textValue("Author"),
+					"publication_year": numberValue(2020),
+					"genres":           listValue("Old"),
+					"isbn":             textValue("111-1111111111"),
 				})
 				if err != nil {
 					return err
 				}
 				return s.Update("books", Resource{
-					"_id":              "test-id-2",
-					"title":            "Updated Title",
-					"author":           "Author",
-					"publication_year": 2020.0,
-					"genres":           []string{"New"},
-					"isbn":             "111-1111111111",
+					"_id":              textValue("test-id-2"),
+					"title":            textValue("Updated Title"),
+					"author":           textValue("Author"),
+					"publication_year": numberValue(2020),
+					"genres":           listValue("New"),
+					"isbn":             textValue("111-1111111111"),
 				})
 			},
 			wantErr: false,
@@ -82,7 +82,7 @@ func TestStoreCRUD(t *testing.T) {
 				if err != nil {
 					return err
 				}
-				if res["title"] != "Updated Title" || res["_v"].(float64) != 2.0 {
+				if res["title"].Text != "Updated Title" || res["_v"].Number != 2 {
 					return errors.New("update failed")
 				}
 				return nil
@@ -93,11 +93,11 @@ func TestStoreCRUD(t *testing.T) {
 			operation: func(s *Store) error {
 				ID = func() string { return "test-id-3" }
 				_, err := s.Create("books", Resource{
-					"title":            "To Delete",
-					"author":           "Author",
-					"publication_year": 2021.0,
-					"genres":           []string{"Temp"},
-					"isbn":             "333-3333333333",
+					"title":            textValue("To Delete"),
+					"author":           textValue("Author"),
+					"publication_year": numberValue(2021),
+					"genres":           listValue("Temp"),
+					"isbn":             textValue("333-3333333333"),
 				})
 				if err != nil {
 					return err
@@ -118,22 +118,22 @@ func TestStoreCRUD(t *testing.T) {
 			operation: func(s *Store) error {
 				ID = func() string { return "book1" }
 				_, err := s.Create("books", Resource{
-					"title":            "Book A",
-					"author":           "Author A",
-					"publication_year": 2000.0,
-					"genres":           []string{"Genre A"},
-					"isbn":             "111-0000000000",
+					"title":            textValue("Book A"),
+					"author":           textValue("Author A"),
+					"publication_year": numberValue(2000),
+					"genres":           listValue("Genre A"),
+					"isbn":             textValue("111-0000000000"),
 				})
 				if err != nil {
 					return err
 				}
 				ID = func() string { return "book2" }
 				_, err = s.Create("books", Resource{
-					"title":            "Book B",
-					"author":           "Author B",
-					"publication_year": 2020.0,
-					"genres":           []string{"Genre B"},
-					"isbn":             "222-0000000000",
+					"title":            textValue("Book B"),
+					"author":           textValue("Author B"),
+					"publication_year": numberValue(2020),
+					"genres":           listValue("Genre B"),
+					"isbn":             textValue("222-0000000000"),
 				})
 				return err
 			},
@@ -143,7 +143,7 @@ func TestStoreCRUD(t *testing.T) {
 				if err != nil || len(books) != 2 {
 					return errors.New("list failed")
 				}
-				if books[0]["publication_year"].(float64) != 2000.0 || books[1]["publication_year"].(float64) != 2020.0 {
+				if books[0]["publication_year"].Number != 2000.0 || books[1]["publication_year"].Number != 2020.0 {
 					return errors.New("incorrect sort order")
 				}
 				return nil

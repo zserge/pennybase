@@ -1,5 +1,5 @@
 {{define "books.html"}}
 {{range .Store.List "books" ""}}
-<div class="book">{{.title}} ({{.year}})</div>
+<div class="book">{{.title.Text}} ({{.year.Number}})</div>
 {{end}}
 {{end}}

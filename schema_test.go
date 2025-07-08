@@ -14,44 +14,44 @@ func TestFieldSchema(t *testing.T) {
 	tests := []struct {
 		name     string
 		field    FieldSchema
-		value    any
+		value    Value
 		expected bool
 	}{
 		// Number validation
 		{
 			name:     "valid number within range",
 			field:    FieldSchema{Type: Number, Min: 5, Max: 10},
-			value:    7.0,
+			value:    numberValue(7),
 			expected: true,
 		},
 		{
 			name:     "number at min boundary",
 			field:    FieldSchema{Type: Number, Min: 5, Max: 10},
-			value:    5.0,
+			value:    numberValue(5),
 			expected: true,
 		},
 		{
 			name:     "number at max boundary",
 			field:    FieldSchema{Type: Number, Min: 5, Max: 10},
-			value:    10.0,
+			value:    numberValue(10),
 			expected: true,
 		},
 		{
 			name:     "number below min",
 			field:    FieldSchema{Type: Number, Min: 5, Max: 10},
-			value:    4.9,
+			value:    numberValue(4.9),
 			expected: false,
 		},
 		{
 			name:     "number above max",
 			field:    FieldSchema{Type: Number, Min: 5, Max: 10},
-			value:    10.1,
+			value:    numberValue(10.1),
 			expected: false,
 		},
 		{
 			name:     "invalid number type",
 			field:    FieldSchema{Type: Number},
-			value:    "not a number",
+			value:    textValue("not a number"),
 			expected: false,
 		},
 
@@ -59,19 +59,19 @@ func TestFieldSchema(t *testing.T) {
 		{
 			name:     "text matches regex",
 			field:    FieldSchema{Type: Text, Regex: "^[a-z]+$"},
-			value:    "lowercase",
+			value:    textValue("lowercase"),
 			expected: true,
 		},
 		{
 			name:     "text doesn't match regex",
 			field:    FieldSchema{Type: Text, Regex: "^[a-z]+$"},
-			value:    "Uppercase",
+			value:    textValue("Uppercase"),
 			expected: false,
 		},
 		{
 			name:     "empty text with regex",
 			field:    FieldSchema{Type: Text, Regex: "^.*$"},
-			value:    "",
+			value:    textValue(""),
 			expected: true,
 		},
 
@@ -79,19 +79,19 @@ func TestFieldSchema(t *testing.T) {
 		{
 			name:     "valid string list",
 			field:    FieldSchema{Type: List},
-			value:    []string{"a", "b"},
+			value:    listValue("a", "b"),
 			expected: true,
 		},
 		{
 			name:     "empty list",
 			field:    FieldSchema{Type: List},
-			value:    []string{},
+			value:    listValue(),
 			expected: true,
 		},
 		{
 			name:     "invalid list type",
 			field:    FieldSchema{Type: List},
-			value:    "not a list",
+			value:    textValue("not a list"),
 			expected: false,
 		},
 	}
@@ -123,11 +123,11 @@ func TestSchemaRecordConversion(t *testing.T) {
 		{
 			name: "valid complete resource",
 			resource: Resource{
-				"_id":  testID,
-				"_v":   1.0,
-				"name": "John",
-				"age":  30.0,
-				"tags": []string{"admin", "user"},
+				"_id":  textValue(testID),
+				"_v":   numberValue(1),
+				"name": textValue("John"),
+				"age":  numberValue(30),
+				"tags": listValue("admin", "user"),
 			},
 			expectedRec: Record{
 				testID,
@@ -141,9 +141,9 @@ func TestSchemaRecordConversion(t *testing.T) {
 		{
 			name: "missing optional fields",
 			resource: Resource{
-				"_id":  testID,
-				"_v":   1.0,
-				"name": "John",
+				"_id":  textValue(testID),
+				"_v":   numberValue(1),
+				"name": textValue("John"),
 			},
 			expectedRec: Record{
 				testID,
@@ -157,27 +157,27 @@ func TestSchemaRecordConversion(t *testing.T) {
 		{
 			name: "invalid _id format",
 			resource: Resource{
-				"_id": "?",
-				"_v":  1.0,
+				"_id": textValue("?"),
+				"_v":  numberValue(1),
 			},
 			expectErr: true,
 		},
 		{
 			name: "invalid name regex",
 			resource: Resource{
-				"_id":  testID,
-				"_v":   1.0,
-				"name": "john", // lowercase
-				"age":  30.0,
+				"_id":  textValue(testID),
+				"_v":   numberValue(1),
+				"name": textValue("john"), // lowercase
+				"age":  numberValue(30),
 			},
 			expectErr: true,
 		},
 		{
 			name: "age out of range",
 			resource: Resource{
-				"_id": testID,
-				"_v":  1.0,
-				"age": 200.0,
+				"_id": textValue(testID),
+				"_v":  numberValue(1),
+				"age": numberValue(200),
 			},
 			expectErr: true,
 		},
@@ -214,11 +214,11 @@ func TestSchemaResourceConversion(t *testing.T) {
 			name:   "valid complete record",
 			record: Record{testID, "2", "Alice", "25", "staff,manager"},
 			expectedRes: Resource{
-				"_id":  testID,
-				"_v":   2.0,
-				"name": "Alice",
-				"age":  25.0,
-				"tags": []string{"staff", "manager"},
+				"_id":  textValue(testID),
+				"_v":   numberValue(2),
+				"name": textValue("Alice"),
+				"age":  numberValue(25),
+				"tags": listValue("staff", "manager"),
 			},
 			expectErr: false,
 		},
@@ -241,11 +241,11 @@ func TestSchemaResourceConversion(t *testing.T) {
 			name:   "empty list field",
 			record: Record{testID, "1", "Bob", "40", ""},
 			expectedRes: Resource{
-				"_id":  testID,
-				"_v":   1.0,
-				"name": "Bob",
-				"age":  40.0,
-				"tags": []string{},
+				"_id":  textValue(testID),
+				"_v":   numberValue(1),
+				"name": textValue("Bob"),
+				"age":  numberValue(40),
+				"tags": listValue(),
 			},
 			expectErr: false,
 		},
@@ -253,11 +253,11 @@ func TestSchemaResourceConversion(t *testing.T) {
 			name:   "single list item",
 			record: Record{testID, "1", "Charlie", "35", "admin"},
 			expectedRes: Resource{
-				"_id":  testID,
-				"_v":   1.0,
-				"name": "Charlie",
-				"age":  35.0,
-				"tags": []string{"admin"},
+				"_id":  textValue(testID),
+				"_v":   numberValue(1),
+				"name": textValue("Charlie"),
+				"age":  numberValue(35),
+				"tags": listValue("admin"),
 			},
 			expectErr: false,
 		},
@@ -303,7 +303,7 @@ func TestSchema_EdgeCases(t *testing.T) {
 
 	t.Run("large numbers", func(t *testing.T) {
 		schema := Schema{{Field: "big", Type: Number}}
-		resource := Resource{"big": math.MaxFloat64}
+		resource := Resource{"big": numberValue(math.MaxFloat64)}
 
 		rec := must(schema.Record(resource)).T(t)
 		want := Record{fmt.Sprintf("%g", math.MaxFloat64)}
@@ -314,7 +314,7 @@ func TestSchema_EdgeCases(t *testing.T) {
 
 	t.Run("special characters in text", func(t *testing.T) {
 		schema := Schema{{Field: "text", Type: Text}}
-		resource := Resource{"text": "特殊字符 日本語"}
+		resource := Resource{"text": textValue("特殊字符 日本語")}
 
 		rec := must(schema.Record(resource)).T(t)
 		want := Record{"特殊字符 日本語"}
